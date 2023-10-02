@@ -1,9 +1,27 @@
-import requests
+from time import sleep
 from bs4 import BeautifulSoup
-from requests.exceptions import RequestException
+from requests import get
 from .user_agents import get_useragent
+import urllib
 
-GOOGLE_SEARCH_URL = "https://www.google.com/search"
+
+def _req(term, results, lang, start, proxies, timeout):
+    resp = get(
+        url="https://www.google.com/search",
+        headers={
+            "User-Agent": get_useragent()
+        },
+        params={
+            "q": term,
+            "num": results + 2,  # Prevents multiple requests
+            "hl": lang,
+            "start": start,
+        },
+        proxies=proxies,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp
 
 
 class SearchResult:
@@ -16,51 +34,37 @@ class SearchResult:
         return f"SearchResult(url={self.url}, title={self.title}, description={self.description})"
 
 
-def _get_search_results(term, num_results, lang, start, proxies, timeout):
-    try:
-        params = {
-            "q": term,
-            "num": num_results + 2,
-            "hl": lang,
-            "start": start,
-        }
-        resp = requests.get(
-            GOOGLE_SEARCH_URL,
-            headers={"User-Agent": get_useragent()},
-            params=params,
-            proxies=proxies,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        return resp.text
-    except RequestException as e:
-        print(f"Error: {e}")
-        return None
+def search(term, num_results=10, lang="en", proxy=None, advanced=False, sleep_interval=0, timeout=5):
+    """Search the Google search engine"""
 
-
-def search(term, num_results=10, lang="en", proxy=None, advanced=False, timeout=5):
-    escaped_term = requests.utils.quote(term)
+    escaped_term = urllib.parse.quote_plus(term) # make 'site:xxx.xxx.xxx ' works.
 
     # Proxy
-    proxies = {"https": proxy} if proxy else None
+    proxies = None
+    if proxy:
+        if proxy.startswith("https"):
+            proxies = {"https": proxy}
+        else:
+            proxies = {"http": proxy}
 
     # Fetch
     start = 0
     while start < num_results:
-        html = _get_search_results(escaped_term, num_results - start, lang, start, proxies, timeout)
-        if html is None:
-            return
+        # Send request
+        resp = _req(escaped_term, num_results - start,
+                    lang, start, proxies, timeout)
 
-        soup = BeautifulSoup(html, "html.parser")
-        result_blocks = soup.find_all("div", class_="g")
-        
-        if not result_blocks:
+        # Parse
+        soup = BeautifulSoup(resp.text, "html.parser")
+        result_block = soup.find_all("div", attrs={"class": "g"})
+        if len(result_block) ==0:
             start += 1
-
-        for result in result_blocks:
+        for result in result_block:
+            # Find link, title, description
             link = result.find("a", href=True)
             title = result.find("h3")
-            description_box = result.find("div", class_="s")
+            description_box = result.find(
+                "div", {"style": "-webkit-line-clamp:2"})
             if description_box:
                 description = description_box.text
                 if link and title and description:
@@ -69,8 +73,7 @@ def search(term, num_results=10, lang="en", proxy=None, advanced=False, timeout=
                         yield SearchResult(link["href"], title.text, description)
                     else:
                         yield link["href"]
+        sleep(sleep_interval)
 
-    # Sleep at the end of the search, if needed
-    if start == 0:
-        return
-
+        if start == 0:
+            return []
